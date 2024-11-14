@@ -1,0 +1,45 @@
+import boto3
+import os
+import datetime
+
+# Constants
+GROUP_NAME = "/aws/lambda/getshoppinglist"  # Specify your log group name here
+DESTINATION_BUCKET = "logsexportbucketdemo"  # Specify your S3 bucket here
+PREFIX = "CloudQuickLabs"  # Prefix for organizing logs in the bucket
+NDAYS = 180  # Set to 180 days (6 months) for the archive threshold
+
+# Get the current time and calculate the date range for logs older than 6 months
+currentTime = datetime.datetime.now()
+StartDate = currentTime - datetime.timedelta(days=NDAYS)
+EndDate = StartDate + datetime.timedelta(days=1)  # Archive one-day span of logs
+
+# Convert dates to timestamps in milliseconds
+fromDate = int(StartDate.timestamp() * 1000)
+toDate = int(EndDate.timestamp() * 1000)
+
+# Define the S3 prefix with the date for organization
+BUCKET_PREFIX = os.path.join(PREFIX, StartDate.strftime('%Y/%m/%d'))
+
+def lambda_handler(event, context):
+    client = boto3.client('logs')
+    
+    # Debug logging
+    print(f"Archiving logs older than {NDAYS} days")
+    print(f"Log Group: {GROUP_NAME}")
+    print(f"Time Range: {StartDate} to {EndDate}")
+    print(f"Destination Bucket: {DESTINATION_BUCKET}")
+    print(f"S3 Prefix: {BUCKET_PREFIX}")
+    
+    try:
+        # Create the export task
+        response = client.create_export_task(
+            logGroupName=GROUP_NAME,
+            fromTime=fromDate,
+            to=toDate,
+            destination=DESTINATION_BUCKET,
+            destinationPrefix=BUCKET_PREFIX
+        )
+        print("Export task created:", response)
+    
+    except Exception as e:
+        print("Error creating export task:", e)
