@@ -1,0 +1,86 @@
+import boto3
+import os
+import datetime
+import time
+import threading
+
+# Constants
+LOG_GROUPS = ["/aws/lambda/getshoppinglist", "/aws/lambda/CORS_function"]  # List of log group names
+DESTINATION_BUCKET = "logsexportbucketdemo"  # Specify your S3 bucket here
+PREFIX = "krishnn"  # Prefix for organizing logs in the bucket
+NDAYS = 180  # Archive threshold for logs older than 180 days
+MAX_RETRIES = 3  # Max retry attempts for each export task
+
+# Calculate the archive cutoff date (180 days ago)
+currentTime = datetime.datetime.now()
+cutoffDate = currentTime - datetime.timedelta(days=NDAYS)
+toDate = int(cutoffDate.timestamp() * 1000)  # Convert cutoff to milliseconds
+
+# Helper to convert dates to timestamps in milliseconds
+def to_millis(dt):
+    return int(dt.timestamp() * 1000)
+
+def get_earliest_log_timestamp(client, log_group):
+    # Retrieves the earliest timestamp available in the log group
+    response = client.describe_log_streams(
+        logGroupName=log_group,
+        orderBy='LogStreamName',
+        limit=1
+    )
+    if 'logStreams' in response and response['logStreams']:
+        earliest_log_date = response['logStreams'][0]['creationTime']
+        return earliest_log_date
+    else:
+        # Default if no logs are found
+        return None
+
+def create_export_task(client, group_name, from_date, to_date, destination_bucket, bucket_prefix, retries=0):
+    try:
+        # Create the export task for the current log group
+        response = client.create_export_task(
+            logGroupName=group_name,
+            fromTime=from_date,
+            to=to_date,
+            destination=destination_bucket,
+            destinationPrefix=bucket_prefix
+        )
+        print(f"Export task created for {group_name}: {response}")
+    except client.exceptions.LimitExceededException as e:
+        if retries < MAX_RETRIES:
+            print(f"LimitExceededException: Resource limit exceeded for {group_name}. Attempt {retries + 1}/{MAX_RETRIES}. Retrying in 30 seconds...")
+            time.sleep(30)
+            create_export_task(client, group_name, from_date, to_date, destination_bucket, bucket_prefix, retries + 1)
+        else:
+            print(f"Failed to create export task for {group_name} after {MAX_RETRIES} attempts.")
+    except Exception as e:
+        print(f"Error creating export task for {group_name}: {e}")
+
+def lambda_handler(event, context):
+    client = boto3.client('logs')
+    s3_client = boto3.client('s3')
+    threads = []
+
+    # Loop through each log group and create export tasks in parallel
+    for group_name in LOG_GROUPS:
+        bucket_prefix = os.path.join(PREFIX, group_name.replace('/', '_'), cutoffDate.strftime('%Y/%m/%d'))
+
+        # Get the earliest timestamp from CloudWatch Logs
+        fromDate = get_earliest_log_timestamp(client, group_name)
+        if fromDate is None:
+            print(f"No logs found for {group_name}. Skipping export.")
+            continue
+
+        print(f"Archiving logs older than {NDAYS} days")
+        print(f"Log Group: {group_name}")
+        print(f"Time Range: {datetime.datetime.fromtimestamp(fromDate / 1000)} to {cutoffDate}")
+        print(f"Destination Bucket: {DESTINATION_BUCKET}")
+        print(f"S3 Prefix: {bucket_prefix}")
+
+        # Create a new thread for each log group export task
+        thread = threading.Thread(target=create_export_task, args=(client, group_name, fromDate, toDate, DESTINATION_BUCKET, bucket_prefix))
+        thread.start()
+        threads.append(thread)
+
+    # Wait for all threads to complete
+    for thread in threads:
+        thread.join()
