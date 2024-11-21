@@ -7,6 +7,7 @@ import threading
 LOG_GROUPS = ["/aws/lambda/getshoppinglist", "/aws/lambda/CORS_function"]  # List of log group names
 DESTINATION_BUCKET = "logsexportbucketdemo"  # Specify your S3 bucket here
 PREFIX = "krishna-cloudwatch"  # Prefix for organizing logs in the bucket
+// Keep retention days as 178
 RETENTION_DAYS = 2  # Archive logs older than this number of days
 MAX_RETRIES = 3  # Max retry attempts for each export task
 
@@ -15,7 +16,10 @@ current_time = datetime.datetime.utcnow()
 start_date = current_time - datetime.timedelta(days=RETENTION_DAYS)
 end_date = start_date + datetime.timedelta(days=1)  # Archive one-day span of logs
 
-# Convert dates to timestamps in milliseconds
+# TODO Convert dates to timestamps in milliseconds
+# Whenever it runs the from_date should be current date's starday in UTC timezone
+# end date should be from_date+1 day
+eg from_date = 2024-11-19 00:00:00 UTC, end_date = 2024-11-20 00:00:00 UTC
 from_date = int(start_date.timestamp() * 1000)
 to_date = int(end_date.timestamp() * 1000)
 
@@ -42,7 +46,7 @@ def create_export_task(client, group_name, from_date, to_date, destination_bucke
 
 def lambda_handler(event, context):
     try:
-        client = boto3.client('logs')
+        client = boto3.client('logs') # TODO check what is the significance of passing logs
     except Exception as e:
         print(f"Error initializing boto3 client: {e}")
         return
@@ -62,6 +66,7 @@ def lambda_handler(event, context):
         print(f"S3 Prefix: {bucket_prefix}")
 
         # Create a new thread for each log group export task
+        # TODO do not use thread, do it sequentially
         thread = threading.Thread(target=create_export_task, args=(client, group_name, from_date, to_date, DESTINATION_BUCKET, bucket_prefix))
         thread.start()
         threads.append(thread)
