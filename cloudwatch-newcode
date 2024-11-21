@@ -1,31 +1,24 @@
-import boto3
 import datetime
 import time
-import threading
+import boto3
 
 # Constants
 LOG_GROUPS = ["/aws/lambda/getshoppinglist", "/aws/lambda/CORS_function"]  # List of log group names
 DESTINATION_BUCKET = "logsexportbucketdemo"  # Specify your S3 bucket here
-PREFIX = "krishna-cloudwatch"  # Prefix for organizing logs in the bucket
-// Keep retention days as 178
-RETENTION_DAYS = 2  # Archive logs older than this number of days
+PREFIX = "krishna-cloudwatch-stavir"  # Prefix for organizing logs in the bucket
+RETENTION_DAYS = 179  # Archive logs older than this number of days
 MAX_RETRIES = 3  # Max retry attempts for each export task
 
-# Get the current time and calculate the date range for logs older than RETENTION_DAYS
-current_time = datetime.datetime.utcnow()
-start_date = current_time - datetime.timedelta(days=RETENTION_DAYS)
-end_date = start_date + datetime.timedelta(days=1)  # Archive one-day span of logs
-
-# TODO Convert dates to timestamps in milliseconds
-# Whenever it runs the from_date should be current date's starday in UTC timezone
-# end date should be from_date+1 day
-eg from_date = 2024-11-19 00:00:00 UTC, end_date = 2024-11-20 00:00:00 UTC
-from_date = int(start_date.timestamp() * 1000)
-to_date = int(end_date.timestamp() * 1000)
+def get_start_and_end_dates():
+    """Calculate the start and end dates in milliseconds."""
+    current_time = datetime.datetime.utcnow()
+    start_date = datetime.datetime(current_time.year, current_time.month, current_time.day) - datetime.timedelta(days=RETENTION_DAYS)
+    end_date = start_date + datetime.timedelta(days=1)
+    return int(start_date.timestamp() * 1000), int(end_date.timestamp() * 1000)
 
 def create_export_task(client, group_name, from_date, to_date, destination_bucket, bucket_prefix, retries=0):
+    """Create an export task for the given log group."""
     try:
-        # Create the export task for the current log group
         response = client.create_export_task(
             logGroupName=group_name,
             fromTime=from_date,
@@ -34,10 +27,10 @@ def create_export_task(client, group_name, from_date, to_date, destination_bucke
             destinationPrefix=bucket_prefix
         )
         print(f"Export task created for {group_name}: {response}")
-    except client.exceptions.LimitExceededException as e:
+    except client.exceptions.LimitExceededException:
         if retries < MAX_RETRIES:
-            print(f"LimitExceededException: Resource limit exceeded for {group_name}. Attempt {retries + 1}/{MAX_RETRIES}. Retrying in 30 seconds...")
-            time.sleep(30)  # Wait before retrying
+            print(f"LimitExceededException for {group_name}. Retrying in 30 seconds... (Attempt {retries + 1}/{MAX_RETRIES})")
+            time.sleep(30)
             create_export_task(client, group_name, from_date, to_date, destination_bucket, bucket_prefix, retries + 1)
         else:
             print(f"Failed to create export task for {group_name} after {MAX_RETRIES} attempts.")
@@ -45,32 +38,23 @@ def create_export_task(client, group_name, from_date, to_date, destination_bucke
         print(f"Error creating export task for {group_name}: {e}")
 
 def lambda_handler(event, context):
+    """Lambda function entry point."""
     try:
-        client = boto3.client('logs') # TODO check what is the significance of passing logs
+        client = boto3.client('logs')
     except Exception as e:
         print(f"Error initializing boto3 client: {e}")
         return
 
-    threads = []
+    # Calculate the date range
+    from_date, to_date = get_start_and_end_dates()
 
-    # Loop through each log group and create export tasks in parallel
     for group_name in LOG_GROUPS:
-        # Construct the S3 prefix dynamically
-        bucket_prefix = f"{PREFIX}/{group_name.replace('/', '_')}/{start_date.strftime('%Y/%m/%d')}"
+        bucket_prefix = f"{PREFIX}/{group_name.replace('/', '_')}/{datetime.datetime.utcnow().strftime('%Y/%m/%d')}"
+        print(f"Processing log group: {group_name}")
+        print(f"Time Range: {datetime.datetime.fromtimestamp(from_date / 1000)} to {datetime.datetime.fromtimestamp(to_date / 1000)}")
+        print(f"Destination Bucket: {DESTINATION_BUCKET}, S3 Prefix: {bucket_prefix}")
 
-        # Debug logging
-        print(f"Archiving logs older than {RETENTION_DAYS} days")
-        print(f"Log Group: {group_name}")
-        print(f"Time Range: {start_date} to {end_date}")
-        print(f"Destination Bucket: {DESTINATION_BUCKET}")
-        print(f"S3 Prefix: {bucket_prefix}")
+        # Sequentially create export tasks
+        create_export_task(client, group_name, from_date, to_date, DESTINATION_BUCKET, bucket_prefix)
 
-        # Create a new thread for each log group export task
-        # TODO do not use thread, do it sequentially
-        thread = threading.Thread(target=create_export_task, args=(client, group_name, from_date, to_date, DESTINATION_BUCKET, bucket_prefix))
-        thread.start()
-        threads.append(thread)
-
-    # Wait for all threads to complete
-    for thread in threads:
-        thread.join()
+    print("All log groups processed.")
